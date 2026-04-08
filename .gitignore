@@ -1,2 +1,17 @@
 __pycache__/
 *.py[cod]
+# model weights
+hf_models/
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# prediction outputs
+predictor_outputs/
+*.csv
+
+# cache
+__pycache__/
+*.pyc

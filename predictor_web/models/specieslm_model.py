@@ -30,7 +30,7 @@ class LightAttention(nn.Module):
         v_masked = v.masked_fill(~mask, -1e9)
         v_max = v_masked.max(dim=-1).values
 
-        return torch.cat([x_prime, v_max], dim=-1)
+        return torch.cat([x_prime, v_max], dim=-1) 
 
 
 class SpeciesLMLightAttention(nn.Module):
