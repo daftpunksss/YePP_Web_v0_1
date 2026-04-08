@@ -95,12 +95,13 @@ class DirichletGeneratorModel:
         cond_drop_false = torch.zeros(num_sequences, dtype=torch.bool, device=self.device)
         zeros_cond = torch.zeros_like(cond_full)
 
-        with self._autocast_context():
-            for s, t in zip(t_span[:-1], t_span[1:]):
-                prior_weight = self.args.prior_pseudocount / (s + self.args.prior_pseudocount - 1)
-                seq_xt = torch.cat([xt * (1 - prior_weight), xt * prior_weight], dim=-1)
-                t_tensor = s[None].expand(num_sequences)
+        simplex_target = torch.ones((num_sequences, seq_length), device=self.device)
+        for s, t in zip(t_span[:-1], t_span[1:]):
+            prior_weight = self.args.prior_pseudocount / (s + self.args.prior_pseudocount - 1)
+            seq_xt = torch.cat([xt * (1 - prior_weight), xt * prior_weight], dim=-1)
+            t_tensor = s[None].expand(num_sequences)
 
+            with self._autocast_context():
                 if gs != 0:
                     logits_uncond = self.model(
                         seq_xt,
@@ -125,16 +126,16 @@ class DirichletGeneratorModel:
 
                 out_probs = torch.nn.functional.softmax(logits / self.args.flow_temp, dim=-1)
 
-                c_factor = self.condflow.c_factor(xt.detach().cpu().numpy(), s.item())
-                c_factor = torch.from_numpy(c_factor).to(xt)
-                c_factor = torch.nan_to_num(c_factor)
+            c_factor = self.condflow.c_factor(xt.detach().cpu().numpy(), s.item())
+            c_factor = torch.from_numpy(c_factor).to(xt)
+            c_factor = torch.nan_to_num(c_factor)
 
-                cond_flows = (eye - xt.unsqueeze(-1)) * c_factor.unsqueeze(-2)
-                flow = (out_probs.unsqueeze(-2) * cond_flows).sum(dim=-1)
-                xt = xt + flow * (t - s)
+            cond_flows = (eye - xt.unsqueeze(-1)) * c_factor.unsqueeze(-2)
+            flow = (out_probs.unsqueeze(-2) * cond_flows).sum(dim=-1)
+            xt = xt + flow * (t - s)
 
-                if not torch.allclose(xt.sum(2), torch.ones((num_sequences, seq_length), device=self.device), atol=1e-4) or not (xt >= 0).all():
-                    xt = simplex_proj(xt)
+            if not torch.allclose(xt.sum(2), simplex_target, atol=1e-4) or not (xt >= 0).all():
+                xt = simplex_proj(xt)
 
         generated_seq = torch.argmax(xt, dim=-1)
         return ["".join(ALPHABET[idx] for idx in seq.tolist()) for seq in generated_seq]
