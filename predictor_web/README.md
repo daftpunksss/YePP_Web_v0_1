@@ -12,8 +12,11 @@ Minimal Gradio app for predictor inference and generator inference.
 - Generator tab
   - Select generator checkpoint
   - Set number of sequences and guidance scale
-  - Optionally provide a condition vector
+  - Select species (loaded from cfg species-reference table)
+  - Enter gene name / gene_id for cfg-based condition lookup
+  - Optionally provide a manual condition vector override (advanced)
   - Run Dirichlet flow matching generation
+  - View condition summary (species, requested gene, matched gene_id, resolved yes/no, condition dimension)
   - View generated sequences preview
   - Download CSV and FASTA
 
@@ -41,6 +44,8 @@ Minimal Gradio app for predictor inference and generator inference.
 - `YEPP_GENERATOR_FLOW_TEMP` (default: `1.0`)
 - `YEPP_GENERATOR_GUIDANCE_SCALE` (default: `1.0`)
 - `YEPP_GENERATOR_USE_MIXED_PRECISION` (`1` to enable CUDA autocast, default: `0`)
+- `YEPP_CFG_SPECIES_TABLE` (default: `./data/lianlab_aval_yeast_promoter_gene_info.csv`)
+- `YEPP_CFG_GENE_CONDITION_TABLE` (default: `./data/codon_ga.csv`)
 
 ## Run locally
 ```bash
@@ -65,4 +70,9 @@ Then open the local Gradio URL shown in terminal.
   - Upload is rejected if sequence count exceeds `YEPP_MAX_SEQUENCES`.
 - Generator:
   - `num_sequences` must be between `1` and `YEPP_GENERATOR_MAX_SEQUENCES`.
-  - Condition vector must be exactly `YEPP_GENERATOR_CONDITION_DIM` comma-separated numeric values (or empty).
+  - Species dropdown values are loaded dynamically from `YEPP_CFG_SPECIES_TABLE` and sorted exactly as cfg usage.
+  - Gene lookup is validated against `YEPP_CFG_GENE_CONDITION_TABLE` using selected species + gene identifier.
+  - Missing matches and ambiguous matches return user-facing errors.
+  - Missing required codon columns (64 fixed codons) return a clear error.
+  - Resolved condition is assembled as `[codon_64, species_one_hot_sorted]` and validated against `YEPP_GENERATOR_CONDITION_DIM`.
+  - Manual condition override (if provided) must be exactly `YEPP_GENERATOR_CONDITION_DIM` comma-separated numeric values.

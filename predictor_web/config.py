@@ -44,6 +44,13 @@ GENERATOR_USE_MIXED_PRECISION = os.getenv("YEPP_GENERATOR_USE_MIXED_PRECISION", 
 GENERATOR_OUTPUT_DIR = Path(os.getenv("YEPP_GENERATOR_OUTPUT_DIR", "./generator_outputs"))
 GENERATOR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+YEPP_CFG_SPECIES_TABLE = Path(
+    os.getenv("YEPP_CFG_SPECIES_TABLE", "./data/lianlab_aval_yeast_promoter_gene_info.csv")
+)
+YEPP_CFG_GENE_CONDITION_TABLE = Path(
+    os.getenv("YEPP_CFG_GENE_CONDITION_TABLE", "./data/codon_ga.csv")
+)
+
 
 def _resolve_generator_checkpoints() -> dict[str, Path]:
     csv_value = os.getenv("YEPP_GENERATOR_CHECKPOINTS", "").strip()
