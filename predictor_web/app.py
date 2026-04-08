@@ -13,6 +13,7 @@ from predictor_web.config import (
 )
 from predictor_web.services.generator_service import run_generation
 from predictor_web.services.predict_service import run_prediction
+from predictor_web.services.cfg_condition_service import get_cfg_condition_resolver
 from predictor_web.utils.fasta import FastaValidationError
 
 
@@ -33,17 +34,32 @@ def _run_predict(file_obj, model_key: str):
         return pd.DataFrame(), None, f"Unexpected error during inference: {err}"
 
 
-def _run_generator(checkpoint_key: str, num_sequences: int, guidance_scale: float, cond_vector: str):
+def _run_generator(
+    checkpoint_key: str,
+    num_sequences: int,
+    guidance_scale: float,
+    selected_species: str,
+    gene_query: str,
+    cond_vector: str,
+):
     try:
-        df, csv_path, fasta_path = run_generation(
+        df, csv_path, fasta_path, summary = run_generation(
             checkpoint_key=checkpoint_key,
             num_sequences=int(num_sequences),
             guidance_scale=float(guidance_scale),
-            condition_vector_csv=cond_vector,
+            selected_species=selected_species,
+            gene_query=gene_query,
+            manual_condition_vector_csv=cond_vector,
         )
         msg = (
             f"Generation completed with checkpoint '{checkpoint_key}'. "
-            f"Generated {len(df)} sequence(s)."
+            f"Generated {len(df)} sequence(s).\n\n"
+            "Condition summary\n"
+            f"- selected species: {summary['selected_species']}\n"
+            f"- requested gene: {summary['requested_gene']}\n"
+            f"- matched gene_id: {summary['matched_gene_id']}\n"
+            f"- condition resolved: {summary['condition_resolved']}\n"
+            f"- condition dimension: {summary['condition_dim']}"
         )
         return df, csv_path, fasta_path, msg
     except FileNotFoundError as err:
@@ -55,6 +71,13 @@ def _run_generator(checkpoint_key: str, num_sequences: int, guidance_scale: floa
 
 
 def build_app() -> gr.Blocks:
+    try:
+        species_choices = get_cfg_condition_resolver().get_species_options()
+        species_loading_note = ""
+    except Exception as err:
+        species_choices = []
+        species_loading_note = f"\n\n⚠️ Could not load cfg species table at startup: {err}"
+
     with gr.Blocks(title="YePP Predictor + Generator") as demo:
         gr.Markdown("# YePP Local App")
 
@@ -91,9 +114,11 @@ def build_app() -> gr.Blocks:
 
             with gr.Tab("Generator"):
                 gr.Markdown(
-                    """
+                    f"""
                     Generate promoter DNA sequences using the existing Dirichlet flow matching generator.
-                    Provide an optional condition vector (comma-separated floats).
+                    Primary condition flow: select species + enter gene_id/gene name.
+                    Optional advanced override: enter a full condition vector manually.
+                    {species_loading_note}
                     """
                 )
                 checkpoint_choices = list(GENERATOR_CHECKPOINTS.keys())
@@ -110,9 +135,18 @@ def build_app() -> gr.Blocks:
                     label="Number of sequences",
                 )
                 guidance_input = gr.Number(value=GENERATOR_GUIDANCE_SCALE, label="Guidance scale")
+                species_input = gr.Dropdown(
+                    choices=species_choices,
+                    value=species_choices[0] if species_choices else None,
+                    label="Species (from cfg species table)",
+                )
+                gene_input = gr.Textbox(
+                    label="Gene name / gene_id",
+                    placeholder="Example: YGR192C",
+                )
                 condition_input = gr.Textbox(
-                    label=f"Condition vector ({GENERATOR_CONDITION_DIM} comma-separated floats; optional)",
-                    placeholder="Leave empty to use a zero vector (unconditioned baseline)",
+                    label=f"Advanced override: condition vector ({GENERATOR_CONDITION_DIM} comma-separated floats; optional)",
+                    placeholder="Leave empty to use cfg species + gene lookup",
                     lines=3,
                 )
                 run_gen_button = gr.Button("Run generation")
@@ -124,7 +158,14 @@ def build_app() -> gr.Blocks:
 
                 run_gen_button.click(
                     fn=_run_generator,
-                    inputs=[checkpoint_input, num_sequences_input, guidance_input, condition_input],
+                    inputs=[
+                        checkpoint_input,
+                        num_sequences_input,
+                        guidance_input,
+                        species_input,
+                        gene_input,
+                        condition_input,
+                    ],
                     outputs=[gen_table, gen_csv, gen_fasta, gen_status],
                 )
 

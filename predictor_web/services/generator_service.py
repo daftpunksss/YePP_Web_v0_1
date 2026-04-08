@@ -8,6 +8,7 @@ import torch
 
 from predictor_web import config
 from predictor_web.models.generator_model import get_generator_model
+from predictor_web.services.cfg_condition_service import get_cfg_condition_resolver
 from predictor_web.utils.generator_io import (
     build_generation_dataframe,
     write_generation_csv,
@@ -42,8 +43,10 @@ def run_generation(
     checkpoint_key: str,
     num_sequences: int,
     guidance_scale: float,
-    condition_vector_csv: str,
-) -> tuple[pd.DataFrame, str, str]:
+    selected_species: str,
+    gene_query: str,
+    manual_condition_vector_csv: str,
+) -> tuple[pd.DataFrame, str, str, dict[str, str]]:
     if checkpoint_key not in config.GENERATOR_CHECKPOINTS:
         raise ValueError("Unsupported generator checkpoint selected.")
 
@@ -67,7 +70,34 @@ def run_generation(
         use_mixed_precision=config.GENERATOR_USE_MIXED_PRECISION,
     )
 
-    cond = _parse_condition_vector(condition_vector_csv, expected_dim=config.GENERATOR_CONDITION_DIM)
+    resolver = get_cfg_condition_resolver()
+    manual_override = (manual_condition_vector_csv or "").strip()
+    if manual_override:
+        cond = _parse_condition_vector(
+            manual_condition_vector_csv, expected_dim=config.GENERATOR_CONDITION_DIM
+        )
+        summary = {
+            "selected_species": selected_species,
+            "requested_gene": gene_query,
+            "matched_gene_id": "manual_override",
+            "condition_resolved": "yes (manual override)",
+            "condition_dim": str(cond.shape[1]),
+        }
+    else:
+        resolved = resolver.resolve(
+            selected_species=selected_species,
+            gene_query=gene_query,
+            expected_condition_dim=config.GENERATOR_CONDITION_DIM,
+        )
+        cond = resolved.condition
+        summary = {
+            "selected_species": resolved.selected_species,
+            "requested_gene": resolved.requested_gene,
+            "matched_gene_id": resolved.matched_gene_id,
+            "condition_resolved": "yes",
+            "condition_dim": str(cond.shape[1]),
+        }
+
     sequences = model.generate(
         condition_vectors=cond,
         num_sequences=num_sequences,
@@ -79,4 +109,4 @@ def run_generation(
     run_id = datetime.utcnow().strftime("generator_%Y%m%d_%H%M%S")
     csv_path = write_generation_csv(df, config.GENERATOR_OUTPUT_DIR, run_id)
     fasta_path = write_generation_fasta(df, config.GENERATOR_OUTPUT_DIR, run_id)
-    return df, csv_path, fasta_path
+    return df, csv_path, fasta_path, summary
