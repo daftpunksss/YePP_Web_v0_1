@@ -11,7 +11,7 @@ from predictor_web.config import (
     MAX_SEQUENCES,
     SPECIES_OPTIONS,
 )
-from predictor_web.services.generator_service import run_generation
+from predictor_web.services.generation_scoring_service import run_generation_with_optional_scoring
 from predictor_web.services.predict_service import run_prediction
 from predictor_web.services.cfg_condition_service import get_cfg_condition_resolver
 from predictor_web.utils.fasta import FastaValidationError
@@ -41,15 +41,22 @@ def _run_generator(
     selected_species: str,
     gene_query: str,
     cond_vector: str,
+    score_generated_sequences: bool,
 ):
     try:
-        df, csv_path, fasta_path, summary = run_generation(
+        df, csv_path, fasta_path, summary = run_generation_with_optional_scoring(
             checkpoint_key=checkpoint_key,
             num_sequences=int(num_sequences),
             guidance_scale=float(guidance_scale),
             selected_species=selected_species,
             gene_query=gene_query,
             manual_condition_vector_csv=cond_vector,
+            score_with_default_predictors=bool(score_generated_sequences),
+        )
+        scoring_note = (
+            "enabled (default predictors: sc, pp)"
+            if score_generated_sequences
+            else "disabled"
         )
         msg = (
             f"Generation completed with checkpoint '{checkpoint_key}'. "
@@ -59,7 +66,8 @@ def _run_generator(
             f"- requested gene: {summary['requested_gene']}\n"
             f"- matched gene_id: {summary['matched_gene_id']}\n"
             f"- condition resolved: {summary['condition_resolved']}\n"
-            f"- condition dimension: {summary['condition_dim']}"
+            f"- condition dimension: {summary['condition_dim']}\n"
+            f"- predictor scoring: {scoring_note}"
         )
         return df, csv_path, fasta_path, msg
     except FileNotFoundError as err:
@@ -149,6 +157,10 @@ def build_app() -> gr.Blocks:
                     placeholder="Leave empty to use cfg species + gene lookup",
                     lines=3,
                 )
+                score_generated_input = gr.Checkbox(
+                    label="Score generated sequences with default predictors (sc + pp)",
+                    value=True,
+                )
                 run_gen_button = gr.Button("Run generation")
 
                 gen_status = gr.Textbox(label="Status", interactive=False)
@@ -165,6 +177,7 @@ def build_app() -> gr.Blocks:
                         species_input,
                         gene_input,
                         condition_input,
+                        score_generated_input,
                     ],
                     outputs=[gen_table, gen_csv, gen_fasta, gen_status],
                 )
