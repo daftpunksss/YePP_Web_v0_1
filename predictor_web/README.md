@@ -16,9 +16,10 @@ Minimal Gradio app for predictor inference and generator inference.
   - Enter gene name / gene_id for cfg-based condition lookup
   - Optionally provide a manual condition vector override (advanced)
   - Run Dirichlet flow matching generation
+  - Automatically score generated sequences with default predictor models (`sc`, `pp`) in the same workflow (toggleable)
   - View condition summary (species, requested gene, matched gene_id, resolved yes/no, condition dimension)
-  - View generated sequences preview
-  - Download CSV and FASTA
+  - View generated sequences preview and predictor scores
+  - Download CSV (including scores) and FASTA
 
 ## Environment variables
 ### Predictor
