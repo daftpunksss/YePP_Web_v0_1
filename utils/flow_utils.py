@@ -1,6 +1,7 @@
 import copy
 import math
 import pickle
+import time
 
 import scipy
 import torch.nn.functional as F
@@ -129,13 +130,16 @@ class DirichletConditionalFlow:
         self.beta_cdfs_derivative = np.diff(self.beta_cdfs, axis=0) / alpha_spacing
         self.K = K
 
-    def c_factor(self, bs, alpha):
+    def c_factor(self, bs, alpha, profile_recorder=None):
+        start_time = time.perf_counter() if profile_recorder is not None else None
         out1 = scipy.special.beta(alpha, self.K - 1)
         out2 = np.where(bs < 1, out1 / ((1 - bs) ** (self.K - 1)), 0)
         out = np.where((bs ** (alpha - 1)) > 0, out2 / (bs ** (alpha - 1)), 0)
         I_func = self.beta_cdfs_derivative[np.argmin(np.abs(alpha - self.alphas))]
         interp = -np.interp(bs, self.bs, I_func)
         final = interp * out
+        if profile_recorder is not None and start_time is not None:
+            profile_recorder(time.perf_counter() - start_time)
         return final
 
 
