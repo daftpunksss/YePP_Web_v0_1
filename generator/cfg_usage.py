@@ -3,6 +3,7 @@ import torch.nn as nn
 import numpy as np
 from typing import Optional, Tuple, List
 import argparse
+import time
 from tqdm import tqdm
 import pandas as pd
 
@@ -72,7 +73,11 @@ class DirichletPromoterInference:
                                 species: torch.Tensor,
                                 guidance_scale: float = 1.0,
                                 batch_size: int = 1,
-                                seq_length: int = 500) -> Tuple[torch.Tensor, torch.Tensor]:
+                                seq_length: int = 500,
+                                use_optimized_impl: bool = True,
+                                enable_profile: bool = False,
+                                enable_step_checks: bool = True,
+                                check_every_n_steps: int = 10) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         使用Dirichlet flow进行序列生成
         
@@ -100,6 +105,7 @@ class DirichletPromoterInference:
         
         # 合并条件信息
         cond_full = torch.cat([codon_info, species], dim=-1)
+        cond_zeros = torch.zeros_like(cond_full)
         
         # 初始化：从Dirichlet分布采样
         x0 = torch.distributions.Dirichlet(
@@ -111,6 +117,20 @@ class DirichletPromoterInference:
         
         # 当前状态
         xt = x0.clone()
+        cond_drop_true = torch.ones(B, dtype=torch.bool, device=self.device)
+        cond_drop_false = torch.zeros(B, dtype=torch.bool, device=self.device)
+        cond_drop_cfg = torch.cat([cond_drop_true, cond_drop_false], dim=0)
+        simplex_target = torch.ones((B, L), device=self.device)
+        timings = {
+            "model_forward_time": 0.0,
+            "c_factor_time": 0.0,
+            "sampling_update_time": 0.0,
+            "checks_time": 0.0,
+        }
+        c_factor_recorder = None
+        if enable_profile:
+            def c_factor_recorder(duration: float) -> None:
+                timings["c_factor_time"] += duration
         
         # 时间步：从1到alpha_max
         t_span = torch.linspace(1, self.args.alpha_max, 
@@ -135,39 +155,48 @@ class DirichletPromoterInference:
             # 时间张量
             t_tensor = s[None].expand(B)
             
+            if enable_profile and self.device.startswith("cuda"):
+                torch.cuda.synchronize(device=self.device)
+                forward_start = time.perf_counter()
             if guidance_scale != 0:
-                # 无条件预测
-                logits_uncond = self.model(
-                    seq_xt, 
-                    torch.zeros_like(cond_full), 
-                    t=t_tensor,
-                    cond_drop_mask=torch.ones(B, dtype=torch.bool, device=self.device)
-                )
-                
-                # 有条件预测
-                logits_cond = self.model(
-                    seq_xt, 
-                    cond_full, 
-                    t=t_tensor,
-                    cond_drop_mask=torch.zeros(B, dtype=torch.bool, device=self.device)
-                )
-                
-                # Classifier-free guidance
+                if use_optimized_impl:
+                    logits_2b = self.model(
+                        torch.cat([seq_xt, seq_xt], dim=0),
+                        torch.cat([cond_zeros, cond_full], dim=0),
+                        t=s[None].expand(2 * B),
+                        cond_drop_mask=cond_drop_cfg,
+                    )
+                    logits_uncond, logits_cond = logits_2b.chunk(2, dim=0)
+                else:
+                    logits_uncond = self.model(
+                        seq_xt,
+                        cond_zeros,
+                        t=t_tensor,
+                        cond_drop_mask=cond_drop_true,
+                    )
+                    logits_cond = self.model(
+                        seq_xt,
+                        cond_full,
+                        t=t_tensor,
+                        cond_drop_mask=cond_drop_false,
+                    )
                 logits = logits_uncond + guidance_scale * (logits_cond - logits_uncond)
             else:
-                # 只使用无条件生成
                 logits = self.model(
-                    seq_xt, 
-                    torch.zeros_like(cond_full), 
+                    seq_xt,
+                    cond_zeros,
                     t=t_tensor,
-                    cond_drop_mask=torch.ones(B, dtype=torch.bool, device=self.device)
+                    cond_drop_mask=cond_drop_true,
                 )
+            if enable_profile and self.device.startswith("cuda"):
+                torch.cuda.synchronize(device=self.device)
+                timings["model_forward_time"] += time.perf_counter() - forward_start
             
             # 计算输出概率
             out_probs = torch.nn.functional.softmax(logits / self.args.flow_temp, -1)
             
             # 计算c_factor
-            c_factor = self.condflow.c_factor(xt.cpu().numpy(), s.item())
+            c_factor = self.condflow.c_factor(xt.cpu().numpy(), s.item(), profile_recorder=c_factor_recorder)
             c_factor = torch.from_numpy(c_factor).to(xt)
             
             # 处理NaN
@@ -176,6 +205,9 @@ class DirichletPromoterInference:
                 c_factor = torch.nan_to_num(c_factor)
             
             # 计算条件流
+            if enable_profile and self.device.startswith("cuda"):
+                torch.cuda.synchronize(device=self.device)
+                update_start = time.perf_counter()
             cond_flows = (eye - xt.unsqueeze(-1)) * c_factor.unsqueeze(-2)
             
             # 计算流
@@ -183,10 +215,21 @@ class DirichletPromoterInference:
             
             # 更新xt
             xt = xt + flow * (t - s)
+            if enable_profile and self.device.startswith("cuda"):
+                torch.cuda.synchronize(device=self.device)
+                timings["sampling_update_time"] += time.perf_counter() - update_start
             
             # 确保xt在simplex上
-            if not torch.allclose(xt.sum(2), torch.ones((B, L), device=self.device), atol=1e-4) or not (xt >= 0).all():
-                xt = simplex_proj(xt)
+            should_check = enable_step_checks and (i % check_every_n_steps == 0)
+            if should_check:
+                if enable_profile and self.device.startswith("cuda"):
+                    torch.cuda.synchronize(device=self.device)
+                    check_start = time.perf_counter()
+                if not torch.allclose(xt.sum(2), simplex_target, atol=1e-4) or not (xt >= 0).all():
+                    xt = simplex_proj(xt)
+                if enable_profile and self.device.startswith("cuda"):
+                    torch.cuda.synchronize(device=self.device)
+                    timings["checks_time"] += time.perf_counter() - check_start
         
         # 最终序列：取argmax
         generated_seq = torch.argmax(xt, dim=-1)
